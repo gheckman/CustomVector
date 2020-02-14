@@ -13,9 +13,9 @@ public:
     explicit
         test_failed_exception(const std::string& msg) : error_message(msg) {}
 
-    virtual ~test_failed_exception() throw () {}
+    virtual ~test_failed_exception() noexcept {}
 
-    virtual const char* what() const throw ()
+    virtual const char* what() const noexcept
     {
         return error_message.c_str();
     }
@@ -247,7 +247,7 @@ std::string test_index_loops()
         ss.str("");
 
         // Using begin and end iterators
-        for (auto&& s : vec)
+        for (const auto& s : vec)
         {
             ss << s;
         }
@@ -268,7 +268,7 @@ std::string test_emplacement()
     {
         custom_vector<different_variables> vec;
 
-        auto check_element = [&func](auto&& actual, auto&& expected)
+        auto check_element = [&func](const auto& actual, const auto& expected)
         {
             require_equal(func, "emplace element", actual, expected);
         };
@@ -303,7 +303,7 @@ std::string test_weird_alignment()
         vec.emplace_back();
         vec.emplace_back('1', std::initializer_list<int>{1, 2, 3, 4}, '5');
 
-        auto check_element = [&func](auto&& actual, auto&& expected)
+        auto check_element = [&func](const auto& actual, const auto& expected)
         {
             require_equal(func, "emplace element", actual, expected);
         };

@@ -5,7 +5,7 @@
 #include <type_traits>
 #include <utility>
 
-template <typename T>
+template <typename T, class Allocator = std::allocator<T>>
 class custom_vector
 {
 public:
@@ -18,11 +18,21 @@ public:
     /** Constructor which allocates memory
         @note No objects are constructed except the vector itself.
         @param[in] capacity Amount of objects which the vector could potentially hold. */
-    custom_vector(size_t capacity)
+    custom_vector(size_t capacity) : custom_vector()
     {
-        begin_ = new data_t[capacity];
-        end_ = begin_;
-        tail_ = begin_ + capacity;
+        reallocate(capacity);
+    }
+
+    /** Constructor which allocates memory and copies objects.
+        @note No objects are constructed except the vector itself.
+        @param[in] capacity Amount of objects which the vector could potentially hold. */
+    custom_vector(size_t capacity, const T& t) : custom_vector(capacity)
+    {
+        for (auto it = begin_; it != tail_; ++it)
+        {
+            new (as_t(it)) T{ t };
+        }
+        end_ = tail_;
     }
 
     /** Copy constructor */
@@ -35,14 +45,14 @@ public:
     /** Copy assignment operator */
     custom_vector& operator=(custom_vector a)
     {
-        swap(*this, a);
+        swap(a);
         return *this;
     }
 
     /** Move constructor */
     custom_vector(custom_vector&& a) noexcept : custom_vector()
     {
-        swap(*this, a);
+        swap(a);
     }
 
     /** Destructor */
@@ -55,12 +65,22 @@ public:
         Performs a lightweight swap of two objects for general use or for the copy-swap idiom
         @param[in, out] lhs Left hand side of the swap
         @param[in, out] rhs Right hand side of the swap */
-    friend void swap(custom_vector& lhs, custom_vector& rhs)
+    void swap(custom_vector& a) noexcept
     {
         using std::swap;
-        swap(lhs.begin_, rhs.begin_);
-        swap(lhs.end_, rhs.end_);
-        swap(lhs.tail_, rhs.tail_);
+        swap(begin_, a.begin_);
+        swap(end_, a.end_);
+        swap(tail_, a.tail_);
+    }
+
+    /** Swap function
+        Performs a lightweight swap of two objects for general use or for the copy-swap idiom
+        @note Friend version for generic support
+        @param[in, out] lhs Left hand side of the swap
+        @param[in, out] rhs Right hand side of the swap */
+    friend void swap(custom_vector& lhs, custom_vector& rhs) noexcept
+    {
+        lhs.swap(rhs);
     }
 
     /** Indexing operator
@@ -76,7 +96,7 @@ public:
     void push_back(const T& t)
     {
         scale_if_required();
-        new (as_t(end_++)) T(t);
+        new (as_t(end_++)) T{ t };
     }
 
     /** Emplaces an object to the vector, allocating memory as needed.
@@ -90,7 +110,7 @@ public:
     }
 
     /** Destructs all objects and deallocates memory */
-    void clear()
+    void clear() noexcept
     {
         std::destroy(as_t(begin_), as_t(end_));
         delete[] begin_;
@@ -101,21 +121,21 @@ public:
 
     /** See return
         @return Amount of objects stored by the vector */
-    size_t size() const
+    size_t size() const noexcept
     {
         return (begin_ && end_) ? std::distance(begin_, end_) : 0;
     }
 
     /** See return
         @return Potential amount of objects the vector may store */
-    size_t capacity() const
+    size_t capacity() const noexcept
     {
         return (begin_ && tail_) ? std::distance(begin_, tail_) : 0;
     }
 
     /** See return
         @return True if the vector currently has at least 1 object stored */
-    bool empty() const
+    bool empty() const noexcept
     {
         return size() == 0;
     }
@@ -131,29 +151,36 @@ public:
     }
 
     /** See return
+        @return Returns a pointer to the first item in the vector */
+    T* data() const noexcept
+    {
+        return as_t(begin_);
+    }
+
+    /** See return
         @return Returns the iterator to the first item in the vector */
-    iterator_t begin() const
+    iterator_t begin() const noexcept
     {
         return as_t(begin_);
     }
 
     /** See return
         @return Returns the iterator to 1 past the last item in the vector */
-    iterator_t end() const
+    iterator_t end() const noexcept
     {
         return as_t(end_);
     }
 
     /** See return
         @return Returns the constant iterator to the first item in the vector */
-    const_iterator_t cbegin() const
+    const_iterator_t cbegin() const noexcept
     {
         return as_t(begin_);
     }
 
     /** See return
         @return Returns the constant iterator to 1 past the last item in the vector */
-    const_iterator_t cend() const
+    const_iterator_t cend() const noexcept
     {
         return as_t(end_);
     }
@@ -167,7 +194,7 @@ private:
 
     /** Gets a new capacity based on the current capacity and scale factor. Always increases by at least 1.
         @return The new scaled capacity */
-    size_t get_new_scaled_capacity() const
+    size_t get_new_scaled_capacity() const noexcept
     {
         auto current_cap = capacity();
         return std::max((size_t)(current_cap * scale_factor()), current_cap + 1);
@@ -175,7 +202,7 @@ private:
 
     /** See return
         @return True if the vector is at capacity and cannot hold even 1 more item */
-    bool full()
+    bool full() const noexcept
     {
         return size() == capacity();
     }
@@ -195,21 +222,37 @@ private:
     {
         auto old_size = size();
         auto old_begin = begin_;
-        begin_ = new data_t[new_cap];
 
-        // if there are any elements in the vector, they must be moved (or copied)
+        // Allocate new memory. If it fails, reset the begin pointer and return.
+        begin_ = new (std::nothrow) data_t[new_cap];
+        if (!begin_)
+        {
+            begin_ = old_begin;
+            return;
+        }
+
+        // if there are any elements in the vector, they must be moved/copied
         if (!empty())
         {
-            // TODO: the stl actually does 3 checks: nothrow_move, copy, move
-            // Does a compile-time check to see is moving is possible. If not, then copy.
-            if constexpr (std::is_move_constructible_v<T>)
+            // Try to move/copy the objects. If it throws an exception (presumedly because a constructor threw it)
+            // destroy the new objects, delete the new memory, reset the begin_ pointer, and return
+            auto new_it = begin_;
+            try
             {
-                std::uninitialized_move(as_t(old_begin), as_t(end_), as_t(begin_));
+                for (auto old_it = old_begin; old_it != end_; ++old_it, ++new_it)
+                {
+                    new (as_t(new_it)) T{ std::move_if_noexcept(*as_t(old_it)) };
+                }
             }
-            else
+            catch (std::exception)
             {
-                std::uninitialized_copy(as_t(old_begin), as_t(end_), as_t(begin_));
+                std::destroy(as_t(begin_), as_t(new_it));
+                delete[] begin_;
+                begin_ = old_begin;
+                return;
             }
+
+            // The old objects must now be destroyed before the memory they occupy can be freed.
             std::destroy(as_t(old_begin), as_t(end_));
         }
 
@@ -221,14 +264,14 @@ private:
     /** Launders the raw memory pointer into an object pointer.
         @param[in] pointer to a block of raw memory
         @return A safe to use pointer to object memory */
-    T* as_t(data_t* p) const
+    T* as_t(data_t* p) const noexcept
     {
         return std::launder(reinterpret_cast<T*>(p));
     }
 
     /** See return
         @return The constant scale factory by which the vector should expand when full */
-    static const float& scale_factor()
+    static const float& scale_factor() noexcept
     {
         static const float scale_factor = 1.5;
         return scale_factor;
