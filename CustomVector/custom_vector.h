@@ -24,7 +24,6 @@ public:
     }
 
     /** Constructor which allocates memory and copies objects.
-        @note No objects are constructed except the vector itself.
         @param[in] capacity Amount of objects which the vector could potentially hold. */
     custom_vector(size_t capacity, const T& t) : custom_vector(capacity)
     {
@@ -60,6 +59,8 @@ public:
     {
         clear();
     }
+
+
 
     /** Swap function
         Performs a lightweight swap of two objects for general use or for the copy-swap idiom
